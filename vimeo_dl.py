@@ -8,6 +8,7 @@ from ffmpeg import FFmpeg
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from wakepy import keep
 
 
 def download_video():
@@ -15,45 +16,47 @@ def download_video():
     sub_btn.config(text='Downloading...')
     url_entry.config(state=tk.DISABLED)
     root.update()
-    master_json_url = url_var.get()
-    r = requests.get(master_json_url)
-    playlist = r.json()
-    base_url = urllib.parse.urljoin(master_json_url, playlist.get("base_url"))
-    video = playlist.get("video", [])[0]
-    audio = playlist.get("audio", [])[0]
-    video_base_url = urllib.parse.urljoin(base_url, video.get("base_url"))
-    audio_base_url = urllib.parse.urljoin(base_url, audio.get("base_url"))
 
-    fnv = playlist.get("clip_id") + "-video.mp4"
-    fna = playlist.get("clip_id") + "-audio.mp4"
+    with keep.running():
+        master_json_url = url_var.get()
+        r = requests.get(master_json_url)
+        playlist = r.json()
+        base_url = urllib.parse.urljoin(master_json_url, playlist.get("base_url"))
+        video = playlist.get("video", [])[0]
+        audio = playlist.get("audio", [])[0]
+        video_base_url = urllib.parse.urljoin(base_url, video.get("base_url"))
+        audio_base_url = urllib.parse.urljoin(base_url, audio.get("base_url"))
 
-    fv = os.open(fnv, os.O_CREAT | os.O_WRONLY)
-    fa = os.open(fna, os.O_CREAT | os.O_WRONLY)
+        fnv = playlist.get("clip_id") + "-video.mp4"
+        fna = playlist.get("clip_id") + "-audio.mp4"
 
-    os.write(fv, base64.b64decode(video.get("init_segment", "")))
-    os.write(fa, base64.b64decode(audio.get("init_segment", "")))
+        fv = os.open(fnv, os.O_CREAT | os.O_WRONLY)
+        fa = os.open(fna, os.O_CREAT | os.O_WRONLY)
 
-    segments_count = min(len(video.get("segments", [])), len(audio.get("segments", [])))
-    progressbar.configure(maximum=segments_count)
-    for i in range(segments_count - 1):
-        progressbar.step()
+        os.write(fv, base64.b64decode(video.get("init_segment", "")))
+        os.write(fa, base64.b64decode(audio.get("init_segment", "")))
+
+        segments_count = min(len(video.get("segments", [])), len(audio.get("segments", [])))
+        progressbar.configure(maximum=segments_count)
+        for i in range(segments_count - 1):
+            progressbar.step()
+            root.update()
+            vurl = urllib.parse.urljoin(video_base_url, video.get("segments", [])[i].get("url"))
+            vr = requests.get(vurl)
+            os.write(fv, vr.content)
+            aurl = urllib.parse.urljoin(audio_base_url, audio.get("segments", [])[i].get("url"))
+            ar = requests.get(aurl)
+            os.write(fa, ar.content)
+
+        os.close(fv)
+        os.close(fa)
+
+        sub_btn.config(text='Merging...')
         root.update()
-        vurl = urllib.parse.urljoin(video_base_url, video.get("segments", [])[i].get("url"))
-        vr = requests.get(vurl)
-        os.write(fv, vr.content)
-        aurl = urllib.parse.urljoin(audio_base_url, audio.get("segments", [])[i].get("url"))
-        ar = requests.get(aurl)
-        os.write(fa, ar.content)
+        FFmpeg().option("y").input(fnv).input(fna).output(playlist.get("clip_id") + ".mp4", codec="copy").execute()
 
-    os.close(fv)
-    os.close(fa)
-
-    sub_btn.config(text='Merging...')
-    root.update()
-    FFmpeg().option("y").input(fnv).input(fna).output(playlist.get("clip_id") + ".mp4", codec="copy").execute()
-
-    os.remove(fnv)
-    os.remove(fna)
+        os.remove(fnv)
+        os.remove(fna)
 
     messagebox.showinfo("Success", "Download and merge completed!")
     root.destroy()
