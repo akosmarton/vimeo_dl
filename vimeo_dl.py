@@ -22,7 +22,16 @@ def download_video():
         r = requests.get(master_json_url)
         playlist = r.json()
         base_url = urllib.parse.urljoin(master_json_url, playlist.get("base_url"))
-        video = playlist.get("video", [])[0]
+        video = None
+        for v in playlist.get("video", []):
+            if v.get("height") == 540:
+                video = v
+                break
+        if not video:
+            for v in playlist.get("video", []):
+                if v.get("height") == 720:
+                    video = v
+                    break
         audio = playlist.get("audio", [])[0]
         video_base_url = urllib.parse.urljoin(base_url, video.get("base_url"))
         audio_base_url = urllib.parse.urljoin(base_url, audio.get("base_url"))
