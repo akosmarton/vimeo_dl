@@ -4,7 +4,7 @@ Guidance for agents working in this repository.
 
 ## Project
 
-Tkinter desktop app that downloads Vimeo videos. It reads a Vimeo master
+GTK 4 desktop app (PyGObject) that downloads Vimeo videos. It reads a Vimeo master
 playlist URL, selects a 540p (fallback 720p) video track and an audio track,
 downloads their segments, and merges them with ffmpeg into `<clip_id>.mp4`
 in the working directory.
@@ -63,13 +63,13 @@ binary does not track source changes.
 ## Code conventions
 
 - Keep `vimeo_dl.py` a single module. Do not add packages unless asked.
-- The GUI is built inside `main()`. Module-level code must not create Tk
-  windows, so the parsers stay importable in tests.
+- The GUI is built inside `main()` with `Gtk.Application`. Module-level code must not
+  import `gi` or create windows, so the parsers stay importable in tests.
 - All network calls go through `session` with `HTTP_TIMEOUT`. Do not add
   bare `requests.get` calls.
 - Downloads run in a worker thread. The worker reports through the `events`
-  queue; only `poll_events()` touches Tk widgets. Keep a single poll chain
-  (`state["poll_job"]`).
+  queue; only `poll_events()` (a `GLib.timeout_add` source) touches GTK widgets.
+  Keep a single poll source (`state["poll_id"]`).
 - Segment order must match playlist order. `ordered_fetch()` keeps at most
   `DOWNLOAD_WINDOW` requests in flight.
 - Temp files go in a `TemporaryDirectory` inside the working directory, so

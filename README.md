@@ -1,6 +1,6 @@
 # Vimeo Downloader
 
-A small Tkinter app that downloads a Vimeo video from its playlist URL and
+A small GTK 4 app that downloads a Vimeo video from its playlist URL and
 saves it as an MP4 file in the current directory.
 
 The app downloads one video track (540p, or 720p if 540p is not available)
@@ -8,7 +8,7 @@ and one audio track, then merges them with ffmpeg without re-encoding.
 
 ## Requirements
 
-- Python 3 with Tkinter (on Fedora: `python3-tkinter`)
+- Python 3 with PyGObject and GTK 4 (on Fedora: `python3-gobject gtk4`)
 - [ffmpeg](https://ffmpeg.org/) on `PATH`
 - Python packages from `requirements.txt`
 

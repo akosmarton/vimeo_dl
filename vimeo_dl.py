@@ -265,94 +265,123 @@ def worker(master_url, events, cancel_event):
 
 
 def main():
-    import tkinter as tk
-    from tkinter import messagebox
-    from tkinter import ttk
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import GLib, Gtk
 
     events = queue.Queue()
     cancel_event = threading.Event()
-    state = {"worker": None, "poll_job": None, "closing": False}
+    state = {"worker": None, "poll_id": 0, "closing": False, "maximum": 0, "value": 0}
 
-    root = tk.Tk()
-    root.title('Vimeo Downloader')
-    url_var = tk.StringVar()
+    def on_activate(app):
+        settings = Gtk.Settings.get_default()
 
-    def reset_controls():
-        sub_btn.config(state=tk.NORMAL, text='Download')
-        url_entry.config(state=tk.NORMAL)
-        progressbar.configure(value=0)
+        def apply_color_scheme(*_):
+            # Plain GTK 4 only honors prefer-dark-theme; the system color-scheme is not applied by itself.
+            dark = settings.get_property("gtk-interface-color-scheme") == Gtk.InterfaceColorScheme.DARK
+            settings.set_property("gtk-application-prefer-dark-theme", dark)
 
-    def handle_event(kind, value):
-        if kind == "status":
-            sub_btn.config(text=value)
-        elif kind == "max":
-            progressbar.configure(maximum=value, value=0)
-        elif kind == "step":
-            progressbar.step()
-        elif kind == "done":
-            reset_controls()
-            messagebox.showinfo("Success", f"Download and merge completed: {value}")
-        elif kind == "error":
-            reset_controls()
-            messagebox.showerror("Error", value)
-        elif kind == "cancelled":
-            reset_controls()
+        settings.connect("notify::gtk-interface-color-scheme", apply_color_scheme)
+        apply_color_scheme()
+        window = Gtk.ApplicationWindow(application=app, title="Vimeo Downloader")
+        url_entry = Gtk.Entry(hexpand=True, width_chars=60)
+        download_btn = Gtk.Button(label="Download")
+        progressbar = Gtk.ProgressBar()
 
-    def poll_events():
-        state["poll_job"] = None
-        # Check liveness before draining: the worker's last event is queued before it exits,
-        # so a drain after seeing "not alive" cannot miss it.
-        running = state["worker"].is_alive()
-        while True:
-            try:
-                kind, value = events.get_nowait()
-            except queue.Empty:
-                break
-            handle_event(kind, value)
-        if running:
-            state["poll_job"] = root.after(100, poll_events)
-        elif state["closing"]:
-            root.destroy()
-
-    def download_video():
-        if state["worker"] is not None and state["worker"].is_alive():
-            return
-        cancel_event.clear()
-        sub_btn.config(state=tk.DISABLED, text='Downloading...')
-        url_entry.config(state=tk.DISABLED)
-        state["worker"] = threading.Thread(
-            target=worker, args=(url_var.get().strip(), events, cancel_event), daemon=True
+        grid = Gtk.Grid(
+            column_spacing=8,
+            row_spacing=8,
+            margin_top=12,
+            margin_bottom=12,
+            margin_start=12,
+            margin_end=12,
         )
-        state["worker"].start()
-        # Only one poll chain may exist; a pending one from a previous run keeps polling.
-        if state["poll_job"] is None:
-            state["poll_job"] = root.after(100, poll_events)
+        grid.attach(Gtk.Label(label="URL", css_classes=["heading"]), 0, 0, 1, 1)
+        grid.attach(url_entry, 1, 0, 1, 1)
+        grid.attach(download_btn, 1, 1, 1, 1)
+        grid.attach(progressbar, 0, 2, 2, 1)
+        window.set_child(grid)
 
-    def on_close():
-        if state["worker"] is not None and state["worker"].is_alive():
-            state["closing"] = True
-            cancel_event.set()
-            sub_btn.config(text='Cancelling...')
-            return
-        root.destroy()
+        def reset_controls():
+            download_btn.set_label("Download")
+            download_btn.set_sensitive(True)
+            url_entry.set_sensitive(True)
+            progressbar.set_fraction(0)
 
-    def show_error(self, *args):
-        err = traceback.format_exception(*args)
-        messagebox.showerror("Error", err[-1])
-        root.destroy()
+        def alert(message, detail):
+            dialog = Gtk.AlertDialog()
+            dialog.set_message(message)
+            dialog.set_detail(detail)
+            dialog.set_buttons(["OK"])
+            dialog.show(window)
 
-    root.protocol("WM_DELETE_WINDOW", on_close)
-    url_label = tk.Label(root, text='URL', font=('calibre', 10, 'bold'))
-    url_label.grid(row=0, column=0)
-    url_entry = tk.Entry(root, textvariable=url_var, font=('calibre', 10, 'normal'), width=80)
-    url_entry.grid(row=0, column=1)
-    sub_btn = tk.Button(root, text='Download', command=download_video)
-    sub_btn.grid(row=1, column=1)
-    progressbar = ttk.Progressbar()
-    progressbar.grid(row=2, column=0, columnspan=2, sticky='we')
+        def handle_event(kind, value):
+            if kind == "status":
+                download_btn.set_label(value)
+            elif kind == "max":
+                state["maximum"], state["value"] = value, 0
+                progressbar.set_fraction(0)
+            elif kind == "step":
+                state["value"] += 1
+                if state["maximum"]:
+                    progressbar.set_fraction(min(state["value"] / state["maximum"], 1.0))
+            elif kind == "done":
+                reset_controls()
+                alert("Success", f"Download and merge completed: {value}")
+            elif kind == "error":
+                reset_controls()
+                alert("Error", value)
+            elif kind == "cancelled":
+                reset_controls()
 
-    tk.Tk.report_callback_exception = show_error
-    root.mainloop()
+        def poll_events():
+            # Check liveness before draining: the worker's last event is queued before it exits,
+            # so a drain after seeing "not alive" cannot miss it.
+            running = state["worker"].is_alive()
+            while True:
+                try:
+                    kind, value = events.get_nowait()
+                except queue.Empty:
+                    break
+                handle_event(kind, value)
+            if running:
+                return GLib.SOURCE_CONTINUE
+            state["poll_id"] = 0
+            if state["closing"]:
+                window.destroy()
+            return GLib.SOURCE_REMOVE
+
+        def start_download(_button):
+            if state["worker"] is not None and state["worker"].is_alive():
+                return
+            cancel_event.clear()
+            download_btn.set_sensitive(False)
+            download_btn.set_label("Downloading...")
+            url_entry.set_sensitive(False)
+            state["worker"] = threading.Thread(
+                target=worker, args=(url_entry.get_text().strip(), events, cancel_event), daemon=True
+            )
+            state["worker"].start()
+            # Only one poll source may exist; a pending one from a previous run keeps polling.
+            if state["poll_id"] == 0:
+                state["poll_id"] = GLib.timeout_add(100, poll_events)
+
+        def on_close_request(_window):
+            if state["worker"] is not None and state["worker"].is_alive():
+                state["closing"] = True
+                cancel_event.set()
+                download_btn.set_label("Cancelling...")
+                return True  # keep the window open until the worker has stopped
+            return False  # let GTK close the window
+
+        download_btn.connect("clicked", start_download)
+        window.connect("close-request", on_close_request)
+        window.present()
+
+    app = Gtk.Application(application_id="dev.makos.vimeo_dl")
+    app.connect("activate", on_activate)
+    app.run(None)
 
 
 if __name__ == "__main__":
