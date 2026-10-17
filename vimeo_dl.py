@@ -205,14 +205,37 @@ def write_stream(path, init_bytes, parts, report, cancel_event):
             report("step")
 
 
-def merge(inputs, output):
+def merge(inputs, output, cancel_event):
     ffmpeg = FFmpeg().option("n")  # never overwrite an existing file
     for path in inputs:
         ffmpeg = ffmpeg.input(path)
+    job = ffmpeg.output(output, codec="copy")
+    finished = threading.Event()
+    terminated = threading.Event()
+
+    def watch_cancel():
+        # terminate() is only accepted while execute() is running, so retry until it is.
+        while not finished.wait(0.1):
+            if cancel_event.is_set():
+                try:
+                    job.terminate()
+                except FFmpegError:
+                    continue
+                terminated.set()
+                return
+
+    watcher = threading.Thread(target=watch_cancel, daemon=True)
+    watcher.start()
     try:
-        ffmpeg.output(output, codec="copy").execute()
+        job.execute()
     except FFmpegError as exc:
         raise RuntimeError(f"ffmpeg merge failed: {exc}") from exc
+    finally:
+        finished.set()
+        watcher.join()
+    # execute() returns normally after SIGTERM, so check the flag explicitly.
+    if terminated.is_set():
+        raise DownloadCancelled()
 
 
 def run_download(master_url, report, cancel_event):
@@ -239,9 +262,11 @@ def run_download(master_url, report, cancel_event):
             audio_path = os.path.join(tmp, "audio.mp4")
             write_stream(audio_path, audio_init, audio_parts, report, cancel_event)
             inputs.append(audio_path)
+        if cancel_event.is_set():
+            raise DownloadCancelled()
         report("status", "Merging...")
         try:
-            merge(inputs, output)
+            merge(inputs, output, cancel_event)
         except Exception:
             if os.path.exists(output):
                 os.remove(output)
@@ -286,7 +311,11 @@ def main():
         apply_color_scheme()
         window = Gtk.ApplicationWindow(application=app, title="Vimeo Downloader")
         url_entry = Gtk.Entry(hexpand=True, width_chars=60)
-        download_btn = Gtk.Button(label="Download")
+        download_btn = Gtk.Button(label="Download", hexpand=True)
+        cancel_btn = Gtk.Button(label="Cancel", sensitive=False)
+        button_box = Gtk.Box(spacing=8, hexpand=True)
+        button_box.append(download_btn)
+        button_box.append(cancel_btn)
         progressbar = Gtk.ProgressBar()
 
         grid = Gtk.Grid(
@@ -299,13 +328,14 @@ def main():
         )
         grid.attach(Gtk.Label(label="URL", css_classes=["heading"]), 0, 0, 1, 1)
         grid.attach(url_entry, 1, 0, 1, 1)
-        grid.attach(download_btn, 1, 1, 1, 1)
+        grid.attach(button_box, 1, 1, 1, 1)
         grid.attach(progressbar, 0, 2, 2, 1)
         window.set_child(grid)
 
         def reset_controls():
             download_btn.set_label("Download")
             download_btn.set_sensitive(True)
+            cancel_btn.set_sensitive(False)
             url_entry.set_sensitive(True)
             progressbar.set_fraction(0)
 
@@ -318,7 +348,9 @@ def main():
 
         def handle_event(kind, value):
             if kind == "status":
-                download_btn.set_label(value)
+                if not cancel_event.is_set():
+                    download_btn.set_label(value)
+                cancel_btn.set_sensitive(not cancel_event.is_set())
             elif kind == "max":
                 state["maximum"], state["value"] = value, 0
                 progressbar.set_fraction(0)
@@ -359,6 +391,7 @@ def main():
             download_btn.set_sensitive(False)
             download_btn.set_label("Downloading...")
             url_entry.set_sensitive(False)
+            cancel_btn.set_sensitive(True)
             state["worker"] = threading.Thread(
                 target=worker, args=(url_entry.get_text().strip(), events, cancel_event), daemon=True
             )
@@ -366,6 +399,11 @@ def main():
             # Only one poll source may exist; a pending one from a previous run keeps polling.
             if state["poll_id"] == 0:
                 state["poll_id"] = GLib.timeout_add(100, poll_events)
+
+        def on_cancel(_button):
+            cancel_event.set()
+            cancel_btn.set_sensitive(False)
+            download_btn.set_label("Cancelling...")
 
         def on_close_request(_window):
             if state["worker"] is not None and state["worker"].is_alive():
@@ -376,6 +414,7 @@ def main():
             return False  # let GTK close the window
 
         download_btn.connect("clicked", start_download)
+        cancel_btn.connect("clicked", on_cancel)
         window.connect("close-request", on_close_request)
         window.present()
 
