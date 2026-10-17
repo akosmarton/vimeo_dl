@@ -7,7 +7,7 @@ Guidance for agents working in this repository.
 GTK 4 desktop app (PyGObject) that downloads Vimeo videos. It reads a Vimeo master
 playlist URL, selects a 540p (fallback 720p) video track and an audio track,
 downloads their segments, and merges them with ffmpeg into `<clip_id>.mp4`
-in the working directory.
+in the directory set in the "Save to" field (default: the working directory).
 
 Supported playlist formats, dispatched by `load_tracks()`:
 - HLS master playlist (`#EXTM3U`), handled by `load_hls_tracks()` and `load_hls_media()`.
@@ -38,7 +38,7 @@ and uses `-n`, so it never overwrites an existing output file.
 python3 vimeo_dl.py
 ```
 
-Paste a Vimeo playlist URL into the window and press Download.
+Paste a Vimeo playlist URL into the window, optionally change the "Save to" directory, and press Download.
 
 ## Test
 

@@ -275,11 +275,13 @@ def merge(inputs, output, cancel_event):
         raise DownloadCancelled()
 
 
-def run_download(master_url, report, cancel_event):
+def run_download(master_url, output_dir, report, cancel_event):
+    if not os.path.isdir(output_dir):
+        raise RuntimeError(f"Output directory does not exist: {output_dir}")
     report("status", "Loading playlist...")
     tracks = load_tracks(master_url)
     clip_id = tracks["clip_id"]
-    output = clip_id + ".mp4"
+    output = os.path.join(output_dir, clip_id + ".mp4")
     if os.path.exists(output):
         raise RuntimeError(f"Output file already exists: {output}")
 
@@ -287,8 +289,8 @@ def run_download(master_url, report, cancel_event):
     audio = tracks["audio"]
     report("max", len(video_parts) + (len(audio[1]) if audio else 0))
 
-    # Temp files live in the working directory; TemporaryDirectory removes them on every exit path.
-    with tempfile.TemporaryDirectory(prefix=clip_id + "-", dir=os.getcwd()) as tmp:
+    # Temp files live in the output directory; TemporaryDirectory removes them on every exit path.
+    with tempfile.TemporaryDirectory(prefix=clip_id + "-", dir=output_dir) as tmp:
         inputs = []
         video_path = os.path.join(tmp, "video.mp4")
         report("status", "Downloading...")
@@ -311,13 +313,13 @@ def run_download(master_url, report, cancel_event):
     return output
 
 
-def worker(master_url, events, cancel_event):
+def worker(master_url, output_dir, events, cancel_event):
     def report(kind, value=None):
         events.put((kind, value))
 
     try:
         with keep.running():
-            output = run_download(master_url, report, cancel_event)
+            output = run_download(master_url, output_dir, report, cancel_event)
         report("done", output)
     except DownloadCancelled:
         report("cancelled")
@@ -330,7 +332,7 @@ def main():
     import gi
 
     gi.require_version("Gtk", "4.0")
-    from gi.repository import GLib, Gtk
+    from gi.repository import Gio, GLib, Gtk
 
     events = queue.Queue()
     cancel_event = threading.Event()
@@ -348,6 +350,11 @@ def main():
         apply_color_scheme()
         window = Gtk.ApplicationWindow(application=app, title="Vimeo Downloader")
         url_entry = Gtk.Entry(hexpand=True, width_chars=60)
+        output_entry = Gtk.Entry(hexpand=True, width_chars=60, text=os.getcwd())
+        browse_btn = Gtk.Button(label="Browse...")
+        output_box = Gtk.Box(spacing=8, hexpand=True)
+        output_box.append(output_entry)
+        output_box.append(browse_btn)
         download_btn = Gtk.Button(label="Download", hexpand=True)
         cancel_btn = Gtk.Button(label="Cancel", sensitive=False)
         button_box = Gtk.Box(spacing=8, hexpand=True)
@@ -365,8 +372,10 @@ def main():
         )
         grid.attach(Gtk.Label(label="URL", css_classes=["heading"]), 0, 0, 1, 1)
         grid.attach(url_entry, 1, 0, 1, 1)
-        grid.attach(button_box, 1, 1, 1, 1)
-        grid.attach(progressbar, 0, 2, 2, 1)
+        grid.attach(Gtk.Label(label="Save to", css_classes=["heading"]), 0, 1, 1, 1)
+        grid.attach(output_box, 1, 1, 1, 1)
+        grid.attach(button_box, 1, 2, 1, 1)
+        grid.attach(progressbar, 0, 3, 2, 1)
         window.set_child(grid)
 
         def reset_controls():
@@ -374,6 +383,8 @@ def main():
             download_btn.set_sensitive(True)
             cancel_btn.set_sensitive(False)
             url_entry.set_sensitive(True)
+            output_entry.set_sensitive(True)
+            browse_btn.set_sensitive(True)
             progressbar.set_fraction(0)
 
         def alert(message, detail):
@@ -421,6 +432,20 @@ def main():
                 window.destroy()
             return GLib.SOURCE_REMOVE
 
+        def choose_folder(_button):
+            dialog = Gtk.FileDialog(title="Select output directory")
+            current = output_entry.get_text().strip()
+            if os.path.isdir(current):
+                dialog.set_initial_folder(Gio.File.new_for_path(current))
+            dialog.select_folder(window, None, on_folder_chosen)
+
+        def on_folder_chosen(dialog, result):
+            try:
+                folder = dialog.select_folder_finish(result)
+            except GLib.Error:
+                return  # dialog dismissed
+            output_entry.set_text(folder.get_path())
+
         def start_download(_button):
             if state["worker"] is not None and state["worker"].is_alive():
                 return
@@ -428,9 +453,13 @@ def main():
             download_btn.set_sensitive(False)
             download_btn.set_label("Downloading...")
             url_entry.set_sensitive(False)
+            output_entry.set_sensitive(False)
+            browse_btn.set_sensitive(False)
             cancel_btn.set_sensitive(True)
             state["worker"] = threading.Thread(
-                target=worker, args=(url_entry.get_text().strip(), events, cancel_event), daemon=True
+                target=worker,
+                args=(url_entry.get_text().strip(), output_entry.get_text().strip(), events, cancel_event),
+                daemon=True,
             )
             state["worker"].start()
             # Only one poll source may exist; a pending one from a previous run keeps polling.
@@ -451,6 +480,7 @@ def main():
             return False  # let GTK close the window
 
         download_btn.connect("clicked", start_download)
+        browse_btn.connect("clicked", choose_folder)
         cancel_btn.connect("clicked", on_cancel)
         window.connect("close-request", on_close_request)
         window.present()
