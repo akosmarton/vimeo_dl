@@ -8,12 +8,12 @@ and one audio track, then merges them with ffmpeg without re-encoding.
 
 ## Requirements
 
-- Python 3 with PyGObject and GTK 4 (on Fedora: `python3-gobject gtk4`)
+- Python 3 with PyGObject and GTK 4 from the system packages (Fedora: `sudo dnf install python3-gobject gtk4 ffmpeg`)
 - [ffmpeg](https://ffmpeg.org/) on `PATH`
 - Python packages from `requirements.txt`
 
 ```
-python3 -m venv .venv
+python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
@@ -67,18 +67,6 @@ The parser tests use inline playlist strings and do not need network access.
 .venv/bin/pip install pytest
 .venv/bin/python -m pytest -q test_vimeo_dl.py
 ```
-
-## Build a standalone binary
-
-PyInstaller is used to build a single executable. The spec file
-`vimeo_dl.spec` is not tracked in git, so it must already exist locally.
-
-```
-.venv/bin/pip install pyinstaller
-.venv/bin/pyinstaller --noconfirm vimeo_dl.spec
-```
-
-The binary is written to `dist/vimeo_dl`. ffmpeg is still needed at runtime.
 
 ## Project layout
 

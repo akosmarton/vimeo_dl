@@ -20,14 +20,13 @@ Encrypted HLS (`#EXT-X-KEY` with a method other than `NONE`) is rejected with an
 - `vimeo_dl.py`: the whole application (parsers, downloader, GUI).
 - `test_vimeo_dl.py`: pytest tests for the pure parser helpers. No network.
 - `requirements.txt`: runtime dependencies only. `pytest` is not listed.
-- `vimeo_dl.spec`: PyInstaller spec. It is listed in `.gitignore` and is not tracked.
-- `dist/`, `build/`, `.venv/`: build and environment output, gitignored. Do not commit them.
+- `.venv/`: local environment, gitignored. Do not commit it.
 
 ## Setup
 
 ```
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt pytest pyinstaller
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements.txt pytest
 ```
 
 The `ffmpeg` binary must be on `PATH`. `merge()` calls it through `python-ffmpeg`
@@ -51,14 +50,6 @@ Tests must not depend on live Vimeo URLs. Those URLs are signed and expire
 (the `exp=` query parameter). Use inline playlist strings and `monkeypatch`
 on `http_get` / `fetch_part`.
 
-## Build
-
-```
-.venv/bin/pyinstaller --noconfirm vimeo_dl.spec
-```
-
-Output: `dist/vimeo_dl`. Rebuild after any change to `vimeo_dl.py`; the
-binary does not track source changes.
 
 ## Code conventions
 
