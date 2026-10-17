@@ -1,4 +1,6 @@
 import pytest
+import requests
+import threading
 
 import vimeo_dl
 
@@ -68,3 +70,68 @@ def test_load_hls_media_rejects_encryption(monkeypatch):
     monkeypatch.setattr(vimeo_dl, "http_get", lambda url: type("R", (), {"text": playlist})())
     with pytest.raises(RuntimeError, match="Encrypted HLS"):
         vimeo_dl.load_hls_media("https://cdn.example/media.m3u8")
+
+
+def test_load_json_tracks_rejects_segment_without_url():
+    playlist = {
+        "base_url": "https://cdn.example/a/",
+        "video": [{"height": 540, "base_url": "v/", "init_segment": "", "segments": [{"url": "s0.m4s"}, {}]}],
+        "audio": [],
+    }
+    with pytest.raises(RuntimeError, match="has no url"):
+        vimeo_dl.load_json_tracks("https://cdn.example/a/playlist.json", playlist)
+
+
+class FakeResponse:
+    def __init__(self, status, content=b""):
+        self.status_code = status
+        self.content = content
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
+
+
+class FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls += 1
+        return self.responses.pop(0)
+
+
+def test_fetch_part_retries_transient_server_error(monkeypatch):
+    fake = FakeSession([FakeResponse(503), FakeResponse(200, b"segment")])
+    monkeypatch.setattr(vimeo_dl, "get_session", lambda: fake)
+    monkeypatch.setattr(vimeo_dl.time, "sleep", lambda seconds: None)
+    assert vimeo_dl.fetch_part("https://cdn.example/seg.m4s") == b"segment"
+    assert fake.calls == 2
+
+
+def test_fetch_part_does_not_retry_client_error(monkeypatch):
+    fake = FakeSession([FakeResponse(404), FakeResponse(200, b"unused")])
+    monkeypatch.setattr(vimeo_dl, "get_session", lambda: fake)
+    monkeypatch.setattr(vimeo_dl.time, "sleep", lambda seconds: None)
+    with pytest.raises(requests.HTTPError):
+        vimeo_dl.fetch_part("https://cdn.example/seg.m4s")
+    assert fake.calls == 1
+
+
+def test_fetch_part_gives_up_after_retry_budget(monkeypatch):
+    attempts = len(vimeo_dl.RETRY_BACKOFF) + 1
+    fake = FakeSession([FakeResponse(503)] * attempts)
+    monkeypatch.setattr(vimeo_dl, "get_session", lambda: fake)
+    monkeypatch.setattr(vimeo_dl.time, "sleep", lambda seconds: None)
+    with pytest.raises(requests.HTTPError):
+        vimeo_dl.fetch_part("https://cdn.example/seg.m4s")
+    assert fake.calls == attempts
+
+
+def test_get_session_is_separate_per_thread():
+    sessions = []
+    thread = threading.Thread(target=lambda: sessions.append(vimeo_dl.get_session()))
+    thread.start()
+    thread.join()
+    assert sessions[0] is not vimeo_dl.get_session()

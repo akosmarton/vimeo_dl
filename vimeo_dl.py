@@ -19,31 +19,59 @@ from wakepy import keep
 HTTP_TIMEOUT = (10, 60)  # (connect, read) seconds
 DOWNLOAD_WORKERS = 8
 DOWNLOAD_WINDOW = 32  # max segment requests in flight
+RETRY_BACKOFF = (1, 2, 4)  # seconds to wait before each retry of a failed segment request
 HLS_ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
 UUID_PATH_RE = re.compile(r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/")
 
-session = requests.Session()
+_thread_local = threading.local()
+
+
+def get_session():
+    # requests.Session is not guaranteed thread-safe and segment fetches run on worker threads.
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = _thread_local.session = requests.Session()
+    return session
+
 
 class DownloadCancelled(Exception):
     pass
 
 
 def http_get(url):
-    r = session.get(url, timeout=HTTP_TIMEOUT)
+    r = get_session().get(url, timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     return r
 
 
-def fetch_part(url, byterange=None):
+def is_transient(exc):
+    if isinstance(exc, requests.HTTPError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
+    return isinstance(exc, requests.RequestException)
+
+
+def fetch_part_once(url, byterange=None):
     headers = {}
     if byterange is not None:
         start, end = byterange  # end is exclusive
         headers["Range"] = f"bytes={start}-{end - 1}"
-    r = session.get(url, headers=headers, timeout=HTTP_TIMEOUT)
+    r = get_session().get(url, headers=headers, timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     if byterange is not None and r.status_code != 206:
         raise RuntimeError(f"Server ignored byte range request for {url}")
     return r.content
+
+
+def fetch_part(url, byterange=None):
+    for delay in RETRY_BACKOFF:
+        try:
+            return fetch_part_once(url, byterange)
+        except requests.RequestException as exc:
+            if not is_transient(exc):
+                raise
+            time.sleep(delay)
+    return fetch_part_once(url, byterange)
 
 
 def default_clip_id():
@@ -62,6 +90,15 @@ def pick_by_height(items, height_of):
     raise RuntimeError("No 540p or 720p video found")
 
 
+def segment_urls(base_url, segments):
+    urls = []
+    for segment in segments:
+        if not segment.get("url"):
+            raise RuntimeError("Playlist segment has no url")
+        urls.append(urllib.parse.urljoin(base_url, segment["url"]))
+    return urls
+
+
 def load_json_tracks(master_url, playlist):
     base_url = urllib.parse.urljoin(master_url, playlist.get("base_url"))
     video = pick_by_height(playlist.get("video", []), lambda v: v.get("height"))
@@ -70,7 +107,7 @@ def load_json_tracks(master_url, playlist):
         "clip_id": playlist.get("clip_id") or default_clip_id(),
         "video": (
             base64.b64decode(video.get("init_segment", "")),
-            [(urllib.parse.urljoin(video_base_url, s.get("url")), None) for s in video.get("segments", [])],
+            [(url, None) for url in segment_urls(video_base_url, video.get("segments", []))],
         ),
         "audio": None,
     }
@@ -80,7 +117,7 @@ def load_json_tracks(master_url, playlist):
         audio_base_url = urllib.parse.urljoin(base_url, audio.get("base_url"))
         tracks["audio"] = (
             base64.b64decode(audio.get("init_segment", "")),
-            [(urllib.parse.urljoin(audio_base_url, s.get("url")), None) for s in audio.get("segments", [])],
+            [(url, None) for url in segment_urls(audio_base_url, audio.get("segments", []))],
         )
     return tracks
 
