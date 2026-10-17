@@ -418,7 +418,8 @@ def main():
         window.connect("close-request", on_close_request)
         window.present()
 
-    app = Gtk.Application(application_id="dev.makos.vimeo_dl")
+    Gtk.Window.set_default_icon_name("io.github.akosmarton.vimeo_dl")
+    app = Gtk.Application(application_id="io.github.akosmarton.vimeo_dl")
     app.connect("activate", on_activate)
     app.run(None)
 
