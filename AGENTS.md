@@ -1,0 +1,99 @@
+# AGENTS.md
+
+Guidance for agents working in this repository.
+
+## Project
+
+Tkinter desktop app that downloads Vimeo videos. It reads a Vimeo master
+playlist URL, selects a 540p (fallback 720p) video track and an audio track,
+downloads their segments, and merges them with ffmpeg into `<clip_id>.mp4`
+in the working directory.
+
+Supported playlist formats, dispatched by `load_tracks()`:
+- HLS master playlist (`#EXTM3U`), handled by `load_hls_tracks()` and `load_hls_media()`.
+- Vimeo JSON playlist, handled by `load_json_tracks()`.
+
+Encrypted HLS (`#EXT-X-KEY` with a method other than `NONE`) is rejected with an error.
+
+## Layout
+
+- `vimeo_dl.py`: the whole application (parsers, downloader, GUI).
+- `test_vimeo_dl.py`: pytest tests for the pure parser helpers. No network.
+- `requirements.txt`: runtime dependencies only. `pytest` is not listed.
+- `vimeo_dl.spec`: PyInstaller spec. It is listed in `.gitignore` and is not tracked.
+- `dist/`, `build/`, `.venv/`: build and environment output, gitignored. Do not commit them.
+
+## Setup
+
+```
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt pytest pyinstaller
+```
+
+The `ffmpeg` binary must be on `PATH`. `merge()` calls it through `python-ffmpeg`
+and uses `-n`, so it never overwrites an existing output file.
+
+## Run
+
+```
+python3 vimeo_dl.py
+```
+
+Paste a Vimeo playlist URL into the window and press Download.
+
+## Test
+
+```
+.venv/bin/python -m pytest -q test_vimeo_dl.py
+```
+
+Tests must not depend on live Vimeo URLs. Those URLs are signed and expire
+(the `exp=` query parameter). Use inline playlist strings and `monkeypatch`
+on `http_get` / `fetch_part`.
+
+## Build
+
+```
+.venv/bin/pyinstaller --noconfirm vimeo_dl.spec
+```
+
+Output: `dist/vimeo_dl`. Rebuild after any change to `vimeo_dl.py`; the
+binary does not track source changes.
+
+## Code conventions
+
+- Keep `vimeo_dl.py` a single module. Do not add packages unless asked.
+- The GUI is built inside `main()`. Module-level code must not create Tk
+  windows, so the parsers stay importable in tests.
+- All network calls go through `session` with `HTTP_TIMEOUT`. Do not add
+  bare `requests.get` calls.
+- Downloads run in a worker thread. The worker reports through the `events`
+  queue; only `poll_events()` touches Tk widgets. Keep a single poll chain
+  (`state["poll_job"]`).
+- Segment order must match playlist order. `ordered_fetch()` keeps at most
+  `DOWNLOAD_WINDOW` requests in flight.
+- Temp files go in a `TemporaryDirectory` inside the working directory, so
+  cleanup happens on every exit path.
+
+## Language and text
+
+- Code, identifiers, comments, docstrings, error messages, and documentation
+  are in English.
+
+## Git
+
+- Do not commit, amend, rebase, reset, tag, stash, or push without explicit
+  user approval for that specific action.
+- Ask before each commit separately, naming the files and the proposed message.
+  One approval covers one commit only.
+- Do not push to any remote or open pull requests or issues without approval.
+
+## Verification before finishing a change
+
+- Parser or selection change: run the pytest suite.
+- Download pipeline change: run an end-to-end download against a local HTTP
+  fixture (a generated master playlist, media playlists, and fragmented MP4
+  segments served with `python -m http.server`). Confirm the output with
+  `ffprobe`. Do not add the fixture to the repository unless asked.
+- GUI change: launch `python3 vimeo_dl.py` and exercise the changed path.
+  State in the report if a display is not available.
