@@ -1,4 +1,6 @@
 certifi==2025.10.5
+# Fedora ships chardet 6, which requests 2.32 rejects with a warning; the venv copy shadows it.
+chardet<6
 charset-normalizer==3.4.4
 idna==3.11
 jeepney==0.9.0
