@@ -1,7 +1,7 @@
 # Vimeo Downloader
 
-A small GTK 4 app that downloads a Vimeo video from its playlist URL and
-saves it as an MP4 file in the current directory.
+A small GTK 4 app that downloads a Vimeo video from its playlist URL, or from
+the watch page the video is embedded in, and saves it as an MP4 file.
 
 The app downloads one video track (540p, or 720p if 540p is not available)
 and one audio track, then merges them with ffmpeg without re-encoding.
@@ -54,9 +54,21 @@ Exit codes: `0` on success, `1` on error, `130` when cancelled.
 The installed launcher forwards arguments, so `vimeo_dl <url>` works the same
 way.
 
-## Supported playlists
+## Supported inputs
 
-The app accepts two playlist formats:
+The URL may be:
+
+- a Vimeo watch page, e.g. `https://vimeo.com/753580183`;
+- a Vimeo player page, e.g. `https://player.vimeo.com/video/753580183` (with
+  the `?h=` hash for unlisted videos);
+- a playlist URL copied from the browser's network tab.
+
+For a page, the app reads the player URL from the page metadata, then takes the
+HLS master playlist from the `window.playerConfig` JSON embedded in the player
+page. Those playlist URLs are signed per page load, so downloading with a page
+URL never hits an expired signature.
+
+The playlist formats themselves are:
 
 - **HLS master playlist** (`#EXTM3U`). The app picks the `RESOLUTION=960x540`
   variant, or `1280x720` if 540p is missing. Audio comes from the
@@ -68,8 +80,9 @@ The app accepts two playlist formats:
 Encrypted HLS (`#EXT-X-KEY` with a method other than `NONE`) is not supported
 and fails with an error.
 
-Vimeo playlist URLs are signed and expire (the `exp=` parameter). Copy a fresh
-URL from the browser's network tab if the download reports an HTTP error.
+Copied playlist URLs are signed and expire (the `exp=` parameter). Pass the
+watch page URL instead, or copy a fresh playlist URL from the browser's
+network tab, if the download reports an HTTP error.
 
 ## Errors
 
@@ -78,9 +91,12 @@ URL from the browser's network tab if the download reports an HTTP error.
   the venv, not from an OS package. Start the app with
   `.venv/bin/python vimeo_dl.py` or the installed `vimeo_dl` launcher, and
   re-run `./install.sh` if the venv is missing or stale.
+- **`No Vimeo player found on the page`**: the URL returned an HTML page without
+  a Vimeo player. Use the watch page or the playlist URL.
+- **`No HLS playlist in the player config`**: the video has no HLS stream.
 - **`No 540p or 720p video found`**: the playlist has neither variant.
 - **`Output file already exists`**: a file with the same name is already in the
-  current directory. The app does not overwrite it.
+  output directory. The app does not overwrite it.
 - **`ffmpeg merge failed`**: ffmpeg returned an error. The partial output file
   is removed.
 

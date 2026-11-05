@@ -1,7 +1,9 @@
 #!/usr/bin/python3
 import argparse
 import base64
+import html
 import itertools
+import json
 import os
 import queue
 import re
@@ -23,6 +25,10 @@ DOWNLOAD_WORKERS = 8
 DOWNLOAD_WINDOW = 32  # max segment requests in flight
 RETRY_BACKOFF = (1, 2, 4)  # seconds to wait before each retry of a failed segment request
 HLS_ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
+PLAYER_CONFIG_RE = re.compile(r"window\.playerConfig\s*=\s*")
+META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+META_ATTR_RE = re.compile(r'([A-Za-z:-]+)\s*=\s*"([^"]*)"')
+PLAYER_META_KEYS = ("og:video:url", "og:video:secure_url", "twitter:player")
 UUID_PATH_RE = re.compile(r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/")
 
 _thread_local = threading.local()
@@ -205,15 +211,69 @@ def load_hls_tracks(master_url, text):
     }
 
 
-def load_tracks(url):
-    r = http_get(url)
-    if r.text.lstrip().startswith("#EXTM3U"):
-        return load_hls_tracks(url, r.text)
+def player_config(html_text):
+    """Return the playerConfig JSON embedded in a Vimeo player page, or None."""
+    match = PLAYER_CONFIG_RE.search(html_text)
+    if match is None:
+        return None
     try:
-        playlist = r.json()
-    except ValueError as exc:
-        raise RuntimeError("Unsupported playlist: neither HLS nor JSON") from exc
-    return load_json_tracks(url, playlist)
+        config, _ = json.JSONDecoder().raw_decode(html_text[match.end():])
+    except ValueError:
+        return None
+    return config
+
+
+def player_page_url(html_text):
+    """Return the player URL advertised by a Vimeo watch page, or None."""
+    for tag in META_TAG_RE.finditer(html_text):
+        attrs = {key.lower(): value for key, value in META_ATTR_RE.findall(tag.group(0))}
+        if attrs.get("property") in PLAYER_META_KEYS or attrs.get("name") in PLAYER_META_KEYS:
+            candidate = html.unescape(attrs.get("content", "")).strip()
+            host = urllib.parse.urlsplit(candidate).hostname or ""
+            if host == "vimeo.com" or host.endswith(".vimeo.com"):
+                return candidate
+    return None
+
+
+def hls_master_url(config):
+    hls = config.get("request", {}).get("files", {}).get("hls") or {}
+    cdns = hls.get("cdns") or {}
+    cdn = cdns.get(hls.get("default_cdn")) or next(iter(cdns.values()), {})
+    url = cdn.get("avc_url") or cdn.get("url")
+    if not url:
+        raise RuntimeError("No HLS playlist in the player config")
+    return url
+
+
+def page_master_url(url, html_text):
+    """Resolve a watch page URL to the HLS master playlist URL of its player."""
+    config = player_config(html_text)
+    if config is None:
+        player_url = player_page_url(html_text)
+        if player_url is None:
+            raise RuntimeError(f"No Vimeo player found on the page: {url}")
+        config = player_config(http_get(player_url).text)
+        if config is None:
+            raise RuntimeError(f"No Vimeo player config found at {player_url}")
+    return hls_master_url(config)
+
+
+def load_tracks(url):
+    for _ in range(3):
+        r = http_get(url)
+        text = r.text
+        if text.lstrip().startswith("#EXTM3U"):
+            return load_hls_tracks(url, text)
+        if "html" in r.headers.get("content-type", "").lower():
+            # A watch or embed page: its player config carries a freshly signed playlist URL.
+            url = page_master_url(url, text)
+            continue
+        try:
+            playlist = r.json()
+        except ValueError as exc:
+            raise RuntimeError("Unsupported playlist: neither HLS nor JSON") from exc
+        return load_json_tracks(url, playlist)
+    raise RuntimeError(f"Could not resolve a playlist from the page: {url}")
 
 
 def ordered_fetch(parts, cancel_event):

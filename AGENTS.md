@@ -4,14 +4,22 @@ Guidance for agents working in this repository.
 
 ## Project
 
-GTK 4 desktop app (PyGObject) that downloads Vimeo videos. It reads a Vimeo master
-playlist URL, selects a 540p (fallback 720p) video track and an audio track,
+GTK 4 desktop app (PyGObject) that downloads Vimeo videos. It reads a Vimeo watch
+page or playlist URL, selects a 540p (fallback 720p) video track and an audio track,
 downloads their segments, and merges them with ffmpeg into `<clip_id>.mp4`
 in the directory set in the "Save to" field (default: the working directory).
 
-Supported playlist formats, dispatched by `load_tracks()`:
+Inputs, dispatched by `load_tracks()`:
+- Vimeo watch or player page (any `text/html` response). `page_master_url()` reads
+  the player URL from the page metadata (`player_page_url()`), takes the HLS master
+  URL out of the `window.playerConfig` JSON of the player page (`player_config()`,
+  `hls_master_url()`), and the loop in `load_tracks()` fetches that playlist. Only
+  `vimeo.com` and `*.vimeo.com` player URLs from the metadata are followed.
 - HLS master playlist (`#EXTM3U`), handled by `load_hls_tracks()` and `load_hls_media()`.
 - Vimeo JSON playlist, handled by `load_json_tracks()`.
+
+Player-config playlist URLs are signed per page load, so page input does not hit
+an expired `exp=` signature.
 
 Encrypted HLS (`#EXT-X-KEY` with a method other than `NONE`) is rejected with an error.
 
@@ -62,7 +70,9 @@ progress goes to stderr, the merged path is the only stdout line. Exit codes:
 
 Tests must not depend on live Vimeo URLs. Those URLs are signed and expire
 (the `exp=` query parameter). Use inline playlist strings and `monkeypatch`
-on `http_get` / `fetch_part`.
+on `http_get` / `fetch_part`. The page tests build a watch page with a
+`<meta>` tag and a player page with an inline `window.playerConfig` JSON
+(`json.dumps`, not a hand-written string).
 
 
 ## Code conventions
