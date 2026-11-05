@@ -14,6 +14,10 @@ python3 -c "import gi; gi.require_version('Gtk', '4.0'); from gi.repository impo
 
 python3 -m venv --system-site-packages "$REPO/.venv"
 "$REPO/.venv/bin/pip" install -q -r "$REPO/requirements.txt"
+# A venv created by an older Python keeps its packages in a versioned directory,
+# so the interpreter finds neither ffmpeg nor the other runtime dependencies.
+"$REPO/.venv/bin/python" -c "import ffmpeg, requests, wakepy" 2>/dev/null \
+    || { echo "venv is broken: remove $REPO/.venv and re-run $0" >&2; exit 1; }
 
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
