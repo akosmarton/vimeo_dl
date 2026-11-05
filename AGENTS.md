@@ -5,10 +5,15 @@ Guidance for agents working in this repository.
 ## Project
 
 GTK 4 desktop app (PyGObject) that downloads Vimeo videos. It reads a Vimeo watch
-page or playlist URL, selects a 540p (then 720p, otherwise the height closest to
-540p) video track and an audio track, downloads their segments, and merges them
-with ffmpeg into `<clip_id>.mp4` in the directory set in the "Save to" field
-(default: the working directory).
+page or playlist URL, selects a video track and an audio track, downloads their
+segments, and merges them with ffmpeg into `<clip_id>.mp4` in the directory set in
+the "Save to" field (default: the working directory).
+
+Video selection defaults to 540p, then 720p, otherwise the height closest to 540p.
+The GUI "Quality" dropdown and the CLI `--quality` option select an exact height
+(falling back to the closest offered height) or `best` for the highest resolution;
+`pick_by_height()` implements that choice and `parse_quality()` validates the CLI
+value.
 
 Inputs, dispatched by `load_tracks()`:
 - Vimeo watch or player page (any `text/html` response). `page_master_url()` reads
@@ -50,14 +55,18 @@ and uses `-n`, so it never overwrites an existing output file.
 The system `python3` does not have the runtime packages (`ffmpeg`, `requests`,
 `wakepy`), so it fails with `ModuleNotFoundError: No module named 'ffmpeg'`.
 
-Paste a Vimeo playlist URL into the window, optionally change the "Save to" directory, and press Download.
+Paste a Vimeo playlist URL into the window, optionally change the "Save to"
+directory and the "Quality" dropdown, and press Download.
 
 With a URL as the first argument the app runs headless in the terminal instead
 and never imports `gi`:
 
 ```
-.venv/bin/python vimeo_dl.py <playlist-url> [-o OUTPUT_DIR]
+.venv/bin/python vimeo_dl.py <playlist-url> [-o OUTPUT_DIR] [-q HEIGHT]
 ```
+
+`--quality` accepts `auto` (the default), `best`, or a height such as `1080`
+(or `1080p`). The selected height appears in the progress status.
 
 `run_cli()` reuses the same `worker()` thread and event protocol as the GUI;
 progress goes to stderr, the merged path is the only stdout line. Exit codes:

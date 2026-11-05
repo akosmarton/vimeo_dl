@@ -37,6 +37,45 @@ def test_pick_by_height_raises_without_variants():
         pick_height([])
 
 
+def test_pick_by_height_prefers_exact_requested_height():
+    items = [{"height": 720}, {"height": 1080}, {"height": 540}]
+    assert vimeo_dl.pick_by_height(items, lambda v: v["height"], 1080)["height"] == 1080
+
+
+def test_pick_by_height_uses_closest_variant_to_requested_height():
+    items = [{"height": 720}, {"height": 480}, {"height": 240}]
+    assert vimeo_dl.pick_by_height(items, lambda v: v["height"], 540)["height"] == 480
+    assert vimeo_dl.pick_by_height(items, lambda v: v["height"], 900)["height"] == 720
+
+
+def test_pick_by_height_best_returns_highest_variant():
+    items = [{"height": 720}, {"height": 2160}, {"height": 540}]
+    assert vimeo_dl.pick_by_height(items, lambda v: v["height"], vimeo_dl.QUALITY_BEST)["height"] == 2160
+
+
+def test_parse_quality_accepts_auto_best_and_heights():
+    assert vimeo_dl.parse_quality("auto") is None
+    assert vimeo_dl.parse_quality("BEST") == vimeo_dl.QUALITY_BEST
+    assert vimeo_dl.parse_quality("1080") == 1080
+    assert vimeo_dl.parse_quality(" 720p ") == 720
+    with pytest.raises(ValueError, match="invalid quality"):
+        vimeo_dl.parse_quality("high")
+    with pytest.raises(ValueError, match="positive"):
+        vimeo_dl.parse_quality("0")
+
+
+def test_load_hls_tracks_selects_requested_height(monkeypatch):
+    master = (
+        "#EXTM3U\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720\n720.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2,RESOLUTION=1920x1080\n1080.m3u8\n"
+    )
+    monkeypatch.setattr(vimeo_dl, "load_hls_media", lambda url: (b"", [(url, None)]))
+    tracks = vimeo_dl.load_hls_tracks("https://cdn.example/master.m3u8", master, 1080)
+    assert tracks["video"][1] == [("https://cdn.example/1080.m3u8", None)]
+    assert tracks["height"] == 1080
+
+
 def pick_height(items):
     return vimeo_dl.pick_by_height(items, lambda v: v["height"])["height"]
 

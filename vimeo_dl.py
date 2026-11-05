@@ -49,6 +49,19 @@ META_ATTR_RE = re.compile(r'([A-Za-z:-]+)\s*=\s*"([^"]*)"')
 PLAYER_META_KEYS = ("og:video:url", "og:video:secure_url", "twitter:player")
 UUID_PATH_RE = re.compile(r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/")
 
+QUALITY_AUTO = "auto"
+QUALITY_BEST = "best"
+QUALITY_OPTIONS = (
+    ("Auto (540p preferred)", None),
+    ("Best available", QUALITY_BEST),
+    ("2160p", 2160),
+    ("1440p", 1440),
+    ("1080p", 1080),
+    ("720p", 720),
+    ("540p", 540),
+    ("360p", 360),
+)
+
 _thread_local = threading.local()
 
 
@@ -125,15 +138,55 @@ def parse_hls_attrs(text):
     return {key: value.strip('"') for key, value in HLS_ATTR_RE.findall(text)}
 
 
-def pick_by_height(items, height_of):
-    for wanted in (540, 720):
-        for item in items:
-            if height_of(item) == wanted:
-                return item
+def pick_by_height(items, height_of, quality=None):
+    """Pick a video variant.
+
+    quality is None for the default (540p, then 720p, otherwise closest to 540p),
+    "best" for the highest resolution, or an exact height whose closest variant is
+    used when the exact height is not offered.
+    """
     if not items:
         raise RuntimeError("No video variants found")
-    # Low- and high-resolution uploads have neither 540p nor 720p; take the closest height.
-    return min(items, key=lambda item: abs((height_of(item) or 0) - 540))
+    heights = [(item, height_of(item)) for item in items]
+    if quality == QUALITY_BEST:
+        return max(heights, key=lambda pair: pair[1] or 0)[0]
+    if quality is None:
+        for wanted in (540, 720):
+            for item, height in heights:
+                if height == wanted:
+                    return item
+        target = 540
+    else:
+        for item, height in heights:
+            if height == quality:
+                return item
+        target = quality
+    return min(heights, key=lambda pair: abs((pair[1] or 0) - target))[0]
+
+
+def parse_quality(text):
+    """Turn a --quality value into None (auto), "best", or a pixel height."""
+    value = text.strip().lower()
+    if value in ("", QUALITY_AUTO):
+        return None
+    if value == QUALITY_BEST:
+        return QUALITY_BEST
+    if value.endswith("p"):
+        value = value[:-1]
+    try:
+        height = int(value)
+    except ValueError:
+        raise ValueError(f"invalid quality {text!r}: use auto, best, or a height such as 1080") from None
+    if height <= 0:
+        raise ValueError(f"invalid quality {text!r}: height must be positive")
+    return height
+
+
+def quality_arg(text):
+    try:
+        return parse_quality(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def segment_urls(base_url, segments):
@@ -145,12 +198,13 @@ def segment_urls(base_url, segments):
     return urls
 
 
-def load_json_tracks(master_url, playlist):
+def load_json_tracks(master_url, playlist, quality=None):
     base_url = urllib.parse.urljoin(master_url, playlist.get("base_url"))
-    video = pick_by_height(playlist.get("video", []), lambda v: v.get("height"))
+    video = pick_by_height(playlist.get("video", []), lambda v: v.get("height"), quality)
     video_base_url = urllib.parse.urljoin(base_url, video.get("base_url"))
     tracks = {
         "clip_id": playlist.get("clip_id") or default_clip_id(),
+        "height": video.get("height"),
         "video": (
             base64.b64decode(video.get("init_segment", "")),
             [(url, None) for url in segment_urls(video_base_url, video.get("segments", []))],
@@ -206,7 +260,7 @@ def load_hls_media(url):
     return init_bytes, segments
 
 
-def load_hls_tracks(master_url, text):
+def load_hls_tracks(master_url, text, quality=None):
     variants = []
     audio_renditions = []
     pending_attrs = None
@@ -226,9 +280,10 @@ def load_hls_tracks(master_url, text):
 
     def height_of(variant):
         resolution = variant[0].get("RESOLUTION", "0x0")
-        return int(resolution.split("x")[1])
+        return int(resolution.split("x")[-1]) or None
 
-    attrs, video_url = pick_by_height(variants, height_of)
+    chosen = pick_by_height(variants, height_of, quality)
+    attrs, video_url = chosen
 
     # A variant without an AUDIO group carries its audio muxed into the video track.
     audio = None
@@ -244,6 +299,7 @@ def load_hls_tracks(master_url, text):
     clip_match = UUID_PATH_RE.search(master_url)
     return {
         "clip_id": clip_match.group(1) if clip_match else default_clip_id(),
+        "height": height_of(chosen),
         "video": load_hls_media(video_url),
         "audio": audio,
     }
@@ -307,7 +363,7 @@ def page_master_url(url, html_text):
     return hls_master_url(config)
 
 
-def load_tracks(url):
+def load_tracks(url, quality=None):
     for _ in range(3):
         try:
             r = http_get(url, BROWSER_HEADERS)
@@ -320,7 +376,7 @@ def load_tracks(url):
             ) from exc
         text = r.text
         if text.lstrip().startswith("#EXTM3U"):
-            return load_hls_tracks(url, text)
+            return load_hls_tracks(url, text, quality)
         if "html" in r.headers.get("content-type", "").lower():
             # A watch or embed page: its player config carries a freshly signed playlist URL.
             url = page_master_url(url, text)
@@ -329,7 +385,7 @@ def load_tracks(url):
             playlist = r.json()
         except ValueError as exc:
             raise RuntimeError("Unsupported playlist: neither HLS nor JSON") from exc
-        return load_json_tracks(url, playlist)
+        return load_json_tracks(url, playlist, quality)
     raise RuntimeError(f"Could not resolve a playlist from the page: {url}")
 
 
@@ -394,11 +450,11 @@ def merge(inputs, output, cancel_event):
         raise DownloadCancelled()
 
 
-def run_download(master_url, output_dir, report, cancel_event):
+def run_download(master_url, output_dir, report, cancel_event, quality=None):
     if not os.path.isdir(output_dir):
         raise RuntimeError(f"Output directory does not exist: {output_dir}")
     report("status", "Loading playlist...")
-    tracks = load_tracks(master_url)
+    tracks = load_tracks(master_url, quality)
     clip_id = tracks["clip_id"]
     output = os.path.join(output_dir, clip_id + ".mp4")
     if os.path.exists(output):
@@ -406,13 +462,14 @@ def run_download(master_url, output_dir, report, cancel_event):
 
     video_init, video_parts = tracks["video"]
     audio = tracks["audio"]
+    height = tracks["height"]
     report("max", len(video_parts) + (len(audio[1]) if audio else 0))
 
     # Temp files live in the output directory; TemporaryDirectory removes them on every exit path.
     with tempfile.TemporaryDirectory(prefix=clip_id + "-", dir=output_dir) as tmp:
         inputs = []
         video_path = os.path.join(tmp, "video.mp4")
-        report("status", "Downloading...")
+        report("status", f"Downloading {height}p..." if height else "Downloading...")
         write_stream(video_path, video_init, video_parts, report, cancel_event)
         inputs.append(video_path)
         if audio:
@@ -432,13 +489,13 @@ def run_download(master_url, output_dir, report, cancel_event):
     return output
 
 
-def worker(master_url, output_dir, events, cancel_event, print_traceback=True):
+def worker(master_url, output_dir, events, cancel_event, quality=None, print_traceback=True):
     def report(kind, value=None):
         events.put((kind, value))
 
     try:
         with keep.running():
-            output = run_download(master_url, output_dir, report, cancel_event)
+            output = run_download(master_url, output_dir, report, cancel_event, quality)
         report("done", output)
     except DownloadCancelled:
         report("cancelled")
@@ -464,6 +521,15 @@ def parse_args(argv):
         default=os.getcwd(),
         help="directory for the merged MP4 (default: current directory)",
     )
+    parser.add_argument(
+        "-q",
+        "--quality",
+        type=quality_arg,
+        default=None,
+        metavar="HEIGHT",
+        help="video resolution: auto (default: 540p, then 720p, else closest), "
+        "a height such as 1080, or best",
+    )
     args = parser.parse_args(argv)
     if args.url is not None:
         args.url = args.url.strip()
@@ -472,7 +538,7 @@ def parse_args(argv):
     return args
 
 
-def run_cli(master_url, output_dir):
+def run_cli(master_url, output_dir, quality=None):
     """Download in the terminal and return the process exit code: 0, 1 on error, 130 when cancelled."""
     events = queue.Queue()
     cancel_event = threading.Event()
@@ -510,7 +576,7 @@ def run_cli(master_url, output_dir):
 
     thread = threading.Thread(
         target=worker,
-        args=(master_url, output_dir, events, cancel_event, False),
+        args=(master_url, output_dir, events, cancel_event, quality, False),
         daemon=True,
     )
     thread.start()
@@ -545,6 +611,7 @@ def run_gui():
         url_entry = Gtk.Entry(hexpand=True, width_chars=60)
         output_entry = Gtk.Entry(hexpand=True, width_chars=60, text=os.getcwd())
         browse_btn = Gtk.Button(label="Browse...")
+        quality_dropdown = Gtk.DropDown.new_from_strings([label for label, _ in QUALITY_OPTIONS])
         output_box = Gtk.Box(spacing=8, hexpand=True)
         output_box.append(output_entry)
         output_box.append(browse_btn)
@@ -567,8 +634,10 @@ def run_gui():
         grid.attach(url_entry, 1, 0, 1, 1)
         grid.attach(Gtk.Label(label="Save to", css_classes=["heading"]), 0, 1, 1, 1)
         grid.attach(output_box, 1, 1, 1, 1)
-        grid.attach(button_box, 1, 2, 1, 1)
-        grid.attach(progressbar, 0, 3, 2, 1)
+        grid.attach(Gtk.Label(label="Quality", css_classes=["heading"]), 0, 2, 1, 1)
+        grid.attach(quality_dropdown, 1, 2, 1, 1)
+        grid.attach(button_box, 1, 3, 1, 1)
+        grid.attach(progressbar, 0, 4, 2, 1)
         window.set_child(grid)
 
         def reset_controls():
@@ -578,6 +647,7 @@ def run_gui():
             url_entry.set_sensitive(True)
             output_entry.set_sensitive(True)
             browse_btn.set_sensitive(True)
+            quality_dropdown.set_sensitive(True)
             progressbar.set_fraction(0)
 
         def alert(message, detail):
@@ -639,6 +709,10 @@ def run_gui():
                 return  # dialog dismissed
             output_entry.set_text(folder.get_path())
 
+        def selected_quality():
+            index = quality_dropdown.get_selected()
+            return QUALITY_OPTIONS[index][1] if index < len(QUALITY_OPTIONS) else None
+
         def start_download(_button):
             if state["worker"] is not None and state["worker"].is_alive():
                 return
@@ -648,10 +722,17 @@ def run_gui():
             url_entry.set_sensitive(False)
             output_entry.set_sensitive(False)
             browse_btn.set_sensitive(False)
+            quality_dropdown.set_sensitive(False)
             cancel_btn.set_sensitive(True)
             state["worker"] = threading.Thread(
                 target=worker,
-                args=(url_entry.get_text().strip(), output_entry.get_text().strip(), events, cancel_event),
+                args=(
+                    url_entry.get_text().strip(),
+                    output_entry.get_text().strip(),
+                    events,
+                    cancel_event,
+                    selected_quality(),
+                ),
                 daemon=True,
             )
             state["worker"].start()
@@ -687,7 +768,7 @@ def run_gui():
 def main(argv=None):
     args = parse_args(argv)
     if args.url is not None:
-        return run_cli(args.url, args.output_dir)
+        return run_cli(args.url, args.output_dir, args.quality)
     run_gui()
     return 0
 
