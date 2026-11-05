@@ -339,15 +339,6 @@ def main():
     state = {"worker": None, "poll_id": 0, "closing": False, "maximum": 0, "value": 0}
 
     def on_activate(app):
-        settings = Gtk.Settings.get_default()
-
-        def apply_color_scheme(*_):
-            # Plain GTK 4 only honors prefer-dark-theme; the system color-scheme is not applied by itself.
-            dark = settings.get_property("gtk-interface-color-scheme") == Gtk.InterfaceColorScheme.DARK
-            settings.set_property("gtk-application-prefer-dark-theme", dark)
-
-        settings.connect("notify::gtk-interface-color-scheme", apply_color_scheme)
-        apply_color_scheme()
         window = Gtk.ApplicationWindow(application=app, title="Vimeo Downloader")
         url_entry = Gtk.Entry(hexpand=True, width_chars=60)
         output_entry = Gtk.Entry(hexpand=True, width_chars=60, text=os.getcwd())
