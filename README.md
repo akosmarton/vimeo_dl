@@ -19,6 +19,8 @@ python3 -m venv --system-site-packages .venv
 
 ## Usage
 
+### GUI
+
 ```
 .venv/bin/python vimeo_dl.py
 ```
@@ -30,6 +32,27 @@ python3 -m venv --system-site-packages .venv
 
 The window shows the status and a progress bar. Closing the window during a
 download cancels it; the window closes once the worker has stopped.
+
+### Command line
+
+Passing a playlist URL as the positional argument skips the GUI:
+
+```
+.venv/bin/python vimeo_dl.py <playlist-url> [-o OUTPUT_DIR]
+```
+
+- `-o`, `--output-dir`: directory for the merged MP4. Defaults to the current
+  directory.
+- Progress, status, and errors go to stderr.
+- On success the full path of the merged file is the only line written to
+  stdout, so `$(...)` captures it.
+- Ctrl-C cancels the download, removes the temporary files, and does not write
+  an output file.
+
+Exit codes: `0` on success, `1` on error, `130` when cancelled.
+
+The installed launcher forwards arguments, so `vimeo_dl <url>` works the same
+way.
 
 ## Supported playlists
 
@@ -62,7 +85,7 @@ URL from the browser's network tab if the download reports an HTTP error.
   is removed.
 
 Segment files are written to a temporary directory named `<clip_id>-*` inside
-the current directory. It is removed on every exit path.
+the output directory. It is removed on every exit path, including Ctrl-C.
 
 ## Tests
 

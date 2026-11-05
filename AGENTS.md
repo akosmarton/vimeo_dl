@@ -17,7 +17,7 @@ Encrypted HLS (`#EXT-X-KEY` with a method other than `NONE`) is rejected with an
 
 ## Layout
 
-- `vimeo_dl.py`: the whole application (parsers, downloader, GUI).
+- `vimeo_dl.py`: the whole application (parsers, downloader, CLI, GUI).
 - `test_vimeo_dl.py`: pytest tests for the pure parser helpers. No network.
 - `requirements.txt`: runtime dependencies only. `pytest` is not listed.
 - `.venv/`: local environment, gitignored. Do not commit it.
@@ -43,6 +43,17 @@ The system `python3` does not have the runtime packages (`ffmpeg`, `requests`,
 
 Paste a Vimeo playlist URL into the window, optionally change the "Save to" directory, and press Download.
 
+With a URL as the first argument the app runs headless in the terminal instead
+and never imports `gi`:
+
+```
+.venv/bin/python vimeo_dl.py <playlist-url> [-o OUTPUT_DIR]
+```
+
+`run_cli()` reuses the same `worker()` thread and event protocol as the GUI;
+progress goes to stderr, the merged path is the only stdout line. Exit codes:
+`0` success, `1` error, `130` cancelled. Keep that contract when changing it.
+
 ## Test
 
 ```
@@ -57,7 +68,8 @@ on `http_get` / `fetch_part`.
 ## Code conventions
 
 - Keep `vimeo_dl.py` a single module. Do not add packages unless asked.
-- The GUI is built inside `main()` with `Gtk.Application`. Module-level code must not
+- The GUI is built inside `run_gui()` with `Gtk.Application`; `main()` only parses the
+  command line and dispatches to `run_cli()` or `run_gui()`. Module-level code must not
   import `gi` or create windows, so the parsers stay importable in tests.
 - All network calls go through `session` with `HTTP_TIMEOUT`. Do not add
   bare `requests.get` calls.

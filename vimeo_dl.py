@@ -1,9 +1,11 @@
 #!/usr/bin/python3
+import argparse
 import base64
 import itertools
 import os
 import queue
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -313,7 +315,7 @@ def run_download(master_url, output_dir, report, cancel_event):
     return output
 
 
-def worker(master_url, output_dir, events, cancel_event):
+def worker(master_url, output_dir, events, cancel_event, print_traceback=True):
     def report(kind, value=None):
         events.put((kind, value))
 
@@ -324,11 +326,94 @@ def worker(master_url, output_dir, events, cancel_event):
     except DownloadCancelled:
         report("cancelled")
     except Exception as exc:
-        traceback.print_exc()
+        if print_traceback:
+            traceback.print_exc()
         report("error", str(exc) or exc.__class__.__name__)
 
 
-def main():
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="vimeo_dl",
+        description="Download a Vimeo video from its playlist URL. Without a URL the GUI starts.",
+    )
+    parser.add_argument(
+        "url",
+        nargs="?",
+        help="playlist URL; when given, the download runs in the terminal and no window is opened",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        default=os.getcwd(),
+        help="directory for the merged MP4 (default: current directory)",
+    )
+    args = parser.parse_args(argv)
+    if args.url is not None:
+        args.url = args.url.strip()
+        if not args.url:
+            parser.error("URL must not be empty")
+    return args
+
+
+def run_cli(master_url, output_dir):
+    """Download in the terminal and return the process exit code: 0, 1 on error, 130 when cancelled."""
+    events = queue.Queue()
+    cancel_event = threading.Event()
+    state = {"maximum": 0, "value": 0, "line_open": False}
+    exit_code = 0
+
+    def end_progress_line():
+        if state["line_open"]:
+            print(file=sys.stderr)
+            state["line_open"] = False
+
+    def on_event(kind, value):
+        nonlocal exit_code
+        if kind == "status":
+            end_progress_line()
+            print(value, file=sys.stderr)
+        elif kind == "max":
+            state["maximum"], state["value"] = value, 0
+        elif kind == "step":
+            state["value"] += 1
+            if state["maximum"]:
+                print(f"\r{state['value']}/{state['maximum']} segments", end="", file=sys.stderr, flush=True)
+                state["line_open"] = True
+        elif kind == "done":
+            end_progress_line()
+            print(value)  # the only stdout output, so scripts can capture the path
+        elif kind == "error":
+            end_progress_line()
+            print(f"Error: {value}", file=sys.stderr)
+            exit_code = 1
+        elif kind == "cancelled":
+            end_progress_line()
+            print("Cancelled", file=sys.stderr)
+            exit_code = 130
+
+    thread = threading.Thread(
+        target=worker,
+        args=(master_url, output_dir, events, cancel_event, False),
+        daemon=True,
+    )
+    thread.start()
+    while thread.is_alive() or not events.empty():
+        try:
+            kind, value = events.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        except KeyboardInterrupt:
+            # The worker checks cancel_event and removes its temp files before it exits.
+            if cancel_event.is_set():
+                raise
+            print("\nCancelling...", file=sys.stderr)
+            cancel_event.set()
+            continue
+        on_event(kind, value)
+    return exit_code
+
+
+def run_gui():
     import gi
 
     gi.require_version("Gtk", "4.0")
@@ -482,5 +567,13 @@ def main():
     app.run(None)
 
 
+def main(argv=None):
+    args = parse_args(argv)
+    if args.url is not None:
+        return run_cli(args.url, args.output_dir)
+    run_gui()
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
