@@ -35,8 +35,11 @@ and uses `-n`, so it never overwrites an existing output file.
 ## Run
 
 ```
-python3 vimeo_dl.py
+.venv/bin/python vimeo_dl.py
 ```
+
+The system `python3` does not have the runtime packages (`ffmpeg`, `requests`,
+`wakepy`), so it fails with `ModuleNotFoundError: No module named 'ffmpeg'`.
 
 Paste a Vimeo playlist URL into the window, optionally change the "Save to" directory, and press Download.
 
@@ -86,5 +89,5 @@ on `http_get` / `fetch_part`.
   fixture (a generated master playlist, media playlists, and fragmented MP4
   segments served with `python -m http.server`). Confirm the output with
   `ffprobe`. Do not add the fixture to the repository unless asked.
-- GUI change: launch `python3 vimeo_dl.py` and exercise the changed path.
+- GUI change: launch `.venv/bin/python vimeo_dl.py` and exercise the changed path.
   State in the report if a display is not available.

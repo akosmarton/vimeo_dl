@@ -50,6 +50,11 @@ URL from the browser's network tab if the download reports an HTTP error.
 
 ## Errors
 
+- **`ModuleNotFoundError: No module named 'ffmpeg'`**: the app was started with
+  the system Python. The `ffmpeg` Python module comes from `python-ffmpeg` in
+  the venv, not from an OS package. Start the app with
+  `.venv/bin/python vimeo_dl.py` or the installed `vimeo_dl` launcher, and
+  re-run `./install.sh` if the venv is missing or stale.
 - **`No 540p or 720p video found`**: the playlist has neither variant.
 - **`Output file already exists`**: a file with the same name is already in the
   current directory. The app does not overwrite it.
