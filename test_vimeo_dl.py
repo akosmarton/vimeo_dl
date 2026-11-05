@@ -27,9 +27,14 @@ def test_pick_by_height_falls_back_to_720():
     assert pick_height(items) == 720
 
 
-def test_pick_by_height_raises_when_neither_exists():
-    with pytest.raises(RuntimeError, match="No 540p or 720p"):
-        pick_height([{"height": 1080}])
+def test_pick_by_height_falls_back_to_closest_height():
+    assert pick_height([{"height": 1080}, {"height": 480}, {"height": 240}]) == 480
+    assert pick_height([{"height": 270}]) == 270
+
+
+def test_pick_by_height_raises_without_variants():
+    with pytest.raises(RuntimeError, match="No video variants"):
+        pick_height([])
 
 
 def pick_height(items):
@@ -230,13 +235,48 @@ def test_load_tracks_resolves_watch_page_to_signed_playlist(monkeypatch):
         "https://cdn.example/video.m3u8": FakePage("#EXTM3U\n#EXTINF:1,\nseg0.m4s\n#EXT-X-ENDLIST\n", "application/x-mpegURL"),
         "https://cdn.example/audio.m3u8": FakePage("#EXTM3U\n#EXTINF:1,\naseg0.m4s\n#EXT-X-ENDLIST\n", "application/x-mpegURL"),
     }
-    monkeypatch.setattr(vimeo_dl, "http_get", lambda url: responses[url])
+    monkeypatch.setattr(vimeo_dl, "http_get", lambda url, headers=None: responses[url])
     tracks = vimeo_dl.load_tracks(watch_url)
     assert tracks["video"][1] == [("https://cdn.example/seg0.m4s", None)]
     assert tracks["audio"][1] == [("https://cdn.example/aseg0.m4s", None)]
 
 
 def test_load_tracks_rejects_page_without_player(monkeypatch):
-    monkeypatch.setattr(vimeo_dl, "http_get", lambda url: FakePage("<html>nothing</html>"))
+    monkeypatch.setattr(vimeo_dl, "http_get", lambda url, headers=None: FakePage("<html>nothing</html>"))
     with pytest.raises(RuntimeError, match="No Vimeo player found"):
         vimeo_dl.load_tracks("https://example.com/page")
+
+
+def test_load_tracks_reports_cloudflare_challenge(monkeypatch):
+    challenge = '<script>function turnstileLoad() { turnstile.render("#w", {}); }</script>'
+    monkeypatch.setattr(vimeo_dl, "http_get", lambda url, headers=None: FakePage(challenge))
+    with pytest.raises(RuntimeError, match="Cloudflare challenge"):
+        vimeo_dl.load_tracks("https://vimeo.com/1")
+
+
+def test_load_tracks_reports_cloudflare_challenge_on_player_page(monkeypatch):
+    responses = {
+        "https://vimeo.com/1": FakePage('<meta property="og:video:url" content="https://player.vimeo.com/video/1?h=x">'),
+        "https://player.vimeo.com/video/1?h=x": FakePage('<script>function turnstileLoad() {}</script>'),
+    }
+    monkeypatch.setattr(vimeo_dl, "http_get", lambda url, headers=None: responses[url])
+    with pytest.raises(RuntimeError, match="Cloudflare challenge"):
+        vimeo_dl.load_tracks("https://vimeo.com/1")
+
+
+def test_load_tracks_reports_refused_request(monkeypatch):
+    def refuse(url, headers=None):
+        raise requests.HTTPError("401", response=FakeResponse(401))
+
+    monkeypatch.setattr(vimeo_dl, "http_get", refuse)
+    with pytest.raises(RuntimeError, match="HTTP 401/403"):
+        vimeo_dl.load_tracks("https://vimeo.com/1")
+
+
+def test_page_get_reports_refused_player_page(monkeypatch):
+    def refuse(url, headers=None):
+        raise requests.HTTPError("403", response=FakeResponse(403))
+
+    monkeypatch.setattr(vimeo_dl, "http_get", refuse)
+    with pytest.raises(RuntimeError, match="Cloudflare challenge"):
+        vimeo_dl.page_get("https://player.vimeo.com/video/1?h=x")

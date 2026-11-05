@@ -3,8 +3,9 @@
 A small GTK 4 app that downloads a Vimeo video from its playlist URL, or from
 the watch page the video is embedded in, and saves it as an MP4 file.
 
-The app downloads one video track (540p, or 720p if 540p is not available)
-and one audio track, then merges them with ffmpeg without re-encoding.
+The app downloads one video track (540p, then 720p, otherwise the resolution
+closest to 540p) and one audio track, then merges them with ffmpeg without
+re-encoding.
 
 ## Requirements
 
@@ -71,11 +72,12 @@ URL never hits an expired signature.
 The playlist formats themselves are:
 
 - **HLS master playlist** (`#EXTM3U`). The app picks the `RESOLUTION=960x540`
-  variant, or `1280x720` if 540p is missing. Audio comes from the
+  variant, or `1280x720` if 540p is missing, otherwise the variant whose height
+  is closest to 540 (a 270p-only upload downloads at 270p). Audio comes from the
   `EXT-X-MEDIA TYPE=AUDIO` entry. `EXT-X-MAP` and `EXT-X-BYTERANGE` are
   supported.
-- **Vimeo JSON playlist**. The app picks the video track with height 540, or
-  720 if 540 is missing, and uses the first audio track.
+- **Vimeo JSON playlist**. The app picks the video track the same way and uses
+  the first audio track.
 
 Encrypted HLS (`#EXT-X-KEY` with a method other than `NONE`) is not supported
 and fails with an error.
@@ -94,7 +96,11 @@ network tab, if the download reports an HTTP error.
 - **`No Vimeo player found on the page`**: the URL returned an HTML page without
   a Vimeo player. Use the watch page or the playlist URL.
 - **`No HLS playlist in the player config`**: the video has no HLS stream.
-- **`No 540p or 720p video found`**: the playlist has neither variant.
+- **`Vimeo answered with a Cloudflare challenge`** / **`Vimeo refused the
+  request (HTTP 401/403)`**: Vimeo's bot protection rejected the request. Retry
+  later; if it keeps failing, copy a fresh playlist URL from the browser's
+  network tab.
+- **`No video variants found`**: the playlist lists no video track.
 - **`Output file already exists`**: a file with the same name is already in the
   output directory. The app does not overwrite it.
 - **`ffmpeg merge failed`**: ffmpeg returned an error. The partial output file

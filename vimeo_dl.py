@@ -21,6 +21,24 @@ from ffmpeg import FFmpeg, FFmpegError
 from wakepy import keep
 
 HTTP_TIMEOUT = (10, 60)  # (connect, read) seconds
+# Vimeo serves pages through Cloudflare, which answers requests without a browser-like
+# header set (and its TLS fingerprint) with a Turnstile challenge instead of the page.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "iframe",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "cross-site",
+    "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Linux"',
+}
+CHALLENGE_MARKER = "turnstileLoad"
 DOWNLOAD_WORKERS = 8
 DOWNLOAD_WINDOW = 32  # max segment requests in flight
 RETRY_BACKOFF = (1, 2, 4)  # seconds to wait before each retry of a failed segment request
@@ -46,10 +64,27 @@ class DownloadCancelled(Exception):
     pass
 
 
-def http_get(url):
-    r = get_session().get(url, timeout=HTTP_TIMEOUT)
+def http_get(url, headers=None):
+    r = get_session().get(url, headers=headers, timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     return r
+
+
+def is_refused(exc):
+    status = exc.response.status_code if exc.response is not None else 0
+    return status in (401, 403)
+
+
+def page_get(url):
+    try:
+        return http_get(url, BROWSER_HEADERS)
+    except requests.HTTPError as exc:
+        if not is_refused(exc):
+            raise
+        raise RuntimeError(
+            "Vimeo refused the page request (HTTP 401/403): the page is behind a Cloudflare "
+            "challenge. Retry the download later or pass a playlist URL copied from the browser"
+        ) from exc
 
 
 def is_transient(exc):
@@ -95,7 +130,10 @@ def pick_by_height(items, height_of):
         for item in items:
             if height_of(item) == wanted:
                 return item
-    raise RuntimeError("No 540p or 720p video found")
+    if not items:
+        raise RuntimeError("No video variants found")
+    # Low- and high-resolution uploads have neither 540p nor 720p; take the closest height.
+    return min(items, key=lambda item: abs((height_of(item) or 0) - 540))
 
 
 def segment_urls(base_url, segments):
@@ -245,22 +283,41 @@ def hls_master_url(config):
     return url
 
 
+def challenge_error():
+    return RuntimeError(
+        "Vimeo answered with a Cloudflare challenge instead of the page. Retry the download later"
+    )
+
+
 def page_master_url(url, html_text):
     """Resolve a watch page URL to the HLS master playlist URL of its player."""
     config = player_config(html_text)
     if config is None:
         player_url = player_page_url(html_text)
         if player_url is None:
+            if CHALLENGE_MARKER in html_text:
+                raise challenge_error()
             raise RuntimeError(f"No Vimeo player found on the page: {url}")
-        config = player_config(http_get(player_url).text)
+        player_text = page_get(player_url).text
+        config = player_config(player_text)
         if config is None:
+            if CHALLENGE_MARKER in player_text:
+                raise challenge_error()
             raise RuntimeError(f"No Vimeo player config found at {player_url}")
     return hls_master_url(config)
 
 
 def load_tracks(url):
     for _ in range(3):
-        r = http_get(url)
+        try:
+            r = http_get(url, BROWSER_HEADERS)
+        except requests.HTTPError as exc:
+            if not is_refused(exc):
+                raise
+            raise RuntimeError(
+                "Vimeo refused the request (HTTP 401/403): the playlist URL may have expired, "
+                "or the page is behind a Cloudflare challenge. Retry later or copy a fresh URL"
+            ) from exc
         text = r.text
         if text.lstrip().startswith("#EXTM3U"):
             return load_hls_tracks(url, text)

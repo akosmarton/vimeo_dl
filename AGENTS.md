@@ -5,9 +5,10 @@ Guidance for agents working in this repository.
 ## Project
 
 GTK 4 desktop app (PyGObject) that downloads Vimeo videos. It reads a Vimeo watch
-page or playlist URL, selects a 540p (fallback 720p) video track and an audio track,
-downloads their segments, and merges them with ffmpeg into `<clip_id>.mp4`
-in the directory set in the "Save to" field (default: the working directory).
+page or playlist URL, selects a 540p (then 720p, otherwise the height closest to
+540p) video track and an audio track, downloads their segments, and merges them
+with ffmpeg into `<clip_id>.mp4` in the directory set in the "Save to" field
+(default: the working directory).
 
 Inputs, dispatched by `load_tracks()`:
 - Vimeo watch or player page (any `text/html` response). `page_master_url()` reads
@@ -86,6 +87,11 @@ on `http_get` / `fetch_part`. The page tests build a watch page with a
 - Downloads run in a worker thread. The worker reports through the `events`
   queue; only `poll_events()` (a `GLib.timeout_add` source) touches GTK widgets.
   Keep a single poll source (`state["poll_id"]`).
+- Web pages on `vimeo.com` sit behind Cloudflare: fetch them through
+  `page_get()` (or `http_get(url, BROWSER_HEADERS)`), never with bare `http_get`,
+  or Turnstile answers with a challenge page. Detect that case with
+  `CHALLENGE_MARKER` and report `challenge_error()` instead of a raw HTTP error.
+  Segment and media-playlist fetches stay header-free; they are not challenged.
 - Segment order must match playlist order. `ordered_fetch()` keeps at most
   `DOWNLOAD_WINDOW` requests in flight.
 - Temp files go in a `TemporaryDirectory` inside the working directory, so
